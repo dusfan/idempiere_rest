@@ -10,6 +10,7 @@ enum Operators {
   ge,
   lt,
   le,
+  in_,
   and,
   not,
   contains,
