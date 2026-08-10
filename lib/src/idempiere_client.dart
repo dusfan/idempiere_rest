@@ -203,8 +203,18 @@ class IdempiereClient {
         warehouseId: warehouseId,
         language: language);
 
+    // NOTE (patched): the original code called _getReqHeaders() here, which
+    // reads _session!.token — but _session was *just* created above and its
+    // (late) token field isn't set until the response below comes back, so
+    // this always threw LateInitializationError before the request was even
+    // sent. This login request has no token yet by definition, so it needs
+    // unauthenticated headers, same as login() below.
     var response = await http.post(Uri.parse(_baseURL + endpoint),
-        headers: _getReqHeaders(), body: jsonEncode(_session!.toJson()));
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: jsonEncode(_session!.toJson()));
 
     if (response.statusCode == HttpStatus.ok) {
       final json = jsonDecode(utf8.decode(response.bodyBytes));
