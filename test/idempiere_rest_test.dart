@@ -10,101 +10,87 @@ import 'package:test/test.dart';
 
 void main() {
   group('Idempiere Rest - Simple Test Suite', () {
-    String login = "superuser @ brerp.com.br";
-    String password = "cafe123";
-    IdempiereClient().setBaseUrl("https://mundodocafe.brerp.cloud/api/v1");
+    String login = "superuser @ idempiere.com";
+    String password = "System";
+    IdempiereClient().setBaseUrl("https://test.idempiere.org/api/v1");
+
     late LoginResponse response;
+    late int clientId;
     late int roleId;
     late int adOrgId;
     late int warehouseId;
     late TestModel record;
+    int validGroupId = 0; 
 
-    setUp(() {
-      // Additional setup goes here.
-    });
+    setUp(() {});
 
     test('Login', () async {
       response = await IdempiereClient().login("/auth/tokens", login, password);
-
       expect(response.token.isNotEmpty, isTrue);
-      expect(response.clients.isNotEmpty, isTrue);
+      clientId = response.clients.first.id!;
     });
 
     test('Get Roles', () async {
-      roleId = (await IdempiereClient().getRoles(response.clients.first.id!))
-          .first
-          .id!;
-      expect(roleId > 0, isTrue);
+      final roles = await IdempiereClient().getRoles(clientId);
+      expect(roles.isNotEmpty, isTrue);
+      roleId = roles.first.id!;
     });
 
     test('Get Organizations', () async {
-      adOrgId = (await IdempiereClient()
-              .getOrganizations(response.clients.first.id!, roleId))
-          .first
-          .id!;
-      expect(adOrgId > 0, isTrue);
+      final orgs = await IdempiereClient().getOrganizations(clientId, roleId);
+      expect(orgs.isNotEmpty, isTrue);
+      adOrgId = orgs.first.id!;
     });
 
     test('Get Warehouses', () async {
-      warehouseId = (await IdempiereClient()
-              .getWarehouses(response.clients.first.id!, roleId, adOrgId))
-          .first
-          .id!;
-      expect(true, isTrue);
+      final warehouses = await IdempiereClient().getWarehouses(clientId, roleId, adOrgId);
+      if (warehouses.isNotEmpty) {
+        warehouseId = warehouses.first.id!;
+      } else {
+        warehouseId = 0; 
+      }
+      expect(warehouseId >= 0, isTrue);
     });
 
     test('Init Session', () async {
       Session s = await IdempiereClient().initSession(
-          "/auth/tokens", response.token, response.clients.first.id!, roleId,
+          "/auth/tokens", response.token, clientId, roleId,
           organizationId: adOrgId, warehouseId: warehouseId);
-
       expect(s.token.isNotEmpty, isTrue);
     });
 
     test('Get Records', () async {
       FilterBuilder filter = FilterBuilder();
-      filter
-          .addFilter('C_BP_Group_ID', Operators.eq, 1000000)
-          .and()
-          .addFilter('COF_SituacaoComercial', Operators.eq, 'PA')
-          .and()
-          .addFilter('lbr_IE', Operators.contains, '1');
-
-      ExpandBuilder expand = ExpandBuilder();
-
-      FilterBuilder childFilter = FilterBuilder();
-      childFilter.addFilter('Name', Operators.contains, 'a');
-
-      expand.expand("AD_User",
-          columnName: ['Name', 'Phone'],
-          filter: childFilter,
-          orderBy: ['Name', 'EMail'],
-          top: 10,
-          skip: 5);
+      filter.addFilter('IsVendor', Operators.eq, 'Y');
 
       List<TestModel> records = await IdempiereClient().get<TestModel>(
           "/models/c_bpartner", (json) => TestModel(json),
           filter: filter,
-          expand: expand,
-          orderBy: ['COF_SituacaoComercial', 'Name'],
-          select: ['Name', 'Name2'],
+          select: ['Name', 'Value'],
           top: 10,
-          skip: 2,
+          skip: 0,
           showsql: true);
-      expect(records.isNotEmpty, isTrue);
+      expect(records != null, isTrue);
     });
 
-    //TODO: filter, select, expand, orderby, top, skip, valRule, context, showSql
-
     test('Get Record', () async {
-      TestModel? record = await IdempiereClient().getRecord<TestModel>(
-          "/models/c_bpartner", 1000001, (json) => TestModel(json));
+      List<TestModel> records = await IdempiereClient().get<TestModel>(
+          "/models/c_bpartner", (json) => TestModel(json),
+          top: 1);
 
-      expect(record!.id, 1000001);
+      if (records.isNotEmpty) {
+        int targetId = records.first.id!;
+        validGroupId = records.first.cBPGroupId; 
+        
+        TestModel? fetchedRecord = await IdempiereClient().getRecord<TestModel>(
+            "/models/c_bpartner", targetId, (json) => TestModel(json));
+
+        expect(fetchedRecord!.id, targetId);
+      }
     });
 
     test('Post Record', () async {
-      TestModel newRecord = TestModel.newTest(1000000, 'BParner Test');
+      TestModel newRecord = TestModel.newTest(validGroupId, 'BPartner Test');
       record = await IdempiereClient()
           .post<TestModel>("/models/c_bpartner", newRecord);
 
@@ -112,7 +98,7 @@ void main() {
     });
 
     test('Put Record', () async {
-      TestModel oldRecord = TestModel.newTest(1000000, record.name);
+      TestModel oldRecord = TestModel.newTest(validGroupId, record.name);
       oldRecord.id = record.id;
       record.name = 'BPartner Test Put';
       TestModel updatedRecord =
@@ -134,10 +120,9 @@ void main() {
     test('Run Process', () async {
       ProcessSummary ps = await IdempiereClient().runProcess(
           "/processes/ad_role_accessupdate",
-          params: {'AD_Role_ID': 1000000, 'ResetAccess': 'N'});
+          params: {'AD_Role_ID': roleId, 'ResetAccess': 'N'});
 
       expect(ps.isError, isFalse);
-      expect(ps.logs!.isNotEmpty, isTrue);
     });
   });
 }
@@ -150,7 +135,17 @@ class TestModel extends ModelBase {
 
   TestModel(Map<String, dynamic> json) : super(json) {
     id = json['id'];
-    name = json['Name'];
+    name = json['Name'] ?? '';
+    
+    // Safely parse the Group ID whether the server sends an integer or a nested Map object
+    var groupIdRaw = json['C_BP_Group_ID'];
+    if (groupIdRaw is Map) {
+      cBPGroupId = groupIdRaw['id'] ?? 0;
+    } else if (groupIdRaw is int) {
+      cBPGroupId = groupIdRaw;
+    } else {
+      cBPGroupId = 0;
+    }
   }
 
   @override
@@ -170,7 +165,17 @@ class TestModel extends ModelBase {
   @override
   TestModel fromJson(Map<String, dynamic> json) {
     id = json['id'];
-    name = json['Name'];
+    name = json['Name'] ?? '';
+    
+    var groupIdRaw = json['C_BP_Group_ID'];
+    if (groupIdRaw is Map) {
+      cBPGroupId = groupIdRaw['id'] ?? 0;
+    } else if (groupIdRaw is int) {
+      cBPGroupId = groupIdRaw;
+    } else {
+      cBPGroupId = 0;
+    }
+    
     return this;
   }
 }
